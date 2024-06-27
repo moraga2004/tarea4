@@ -1,0 +1,292 @@
+---
+title: "Registros de presencia y especies de reptiles de Costa Rica"
+author: "Franchesca Moraga y Fernanda Chinchilla"
+format: 
+  dashboard: 
+    orientation: columns
+---
+
+```{r}
+#| label: carga-paquetes
+
+library(tidyverse)      
+library(sf)             
+library(leaflet)        
+library(leaflet.extras) 
+library(leafem)         
+library(plotly)
+library(DT)             
+library(data.table)
+```
+
+
+```{r}
+#| label: carga-datos
+
+regiones_socioeconomicas <-
+  st_read("regiones-socioeconomicas.gpkg")
+
+especies_reptiles <- 
+  read.csv("especies-reptiles.csv")
+
+registros_reptiles <- 
+  fread("registros-reptiles.csv")
+```
+
+
+```{r}
+#| label: tabla-interactiva 
+
+datos_combinados <- 
+  registros_reptiles |>
+  inner_join(especies_reptiles, by = "species")
+
+conteo_por_categoria <-
+  datos_combinados |>
+  group_by(iucnRedListCategory) |>
+  summarize(Cantidad_de_registros = n()) |>
+  ungroup() |>
+  arrange(desc(Cantidad_de_registros))
+
+datatable(conteo_por_categoria,
+          colnames = c("Categoría de Lista Roja", "Cantidad de Registros de Presencia"), 
+          options = list(pageLength = 10, autoWidth = TRUE))
+```
+
+# Grafico
+
+## Colums
+
+```{r}
+#| label: grafico-barras
+
+clases_filtradas <- 
+  registros_reptiles |>
+  filter(class %in% c("Squamata", "Testudines", "Crocodylia"))
+
+# registros de presencia por clase
+conteo_por_clase <- 
+  clases_filtradas |>
+  group_by(class) |>
+  summarize(Cantidad_de_registros = n()) |>
+  ungroup() |>
+  arrange(desc(Cantidad_de_registros))
+
+grafico_barras <-
+  ggplot(conteo_por_clase, aes(x = reorder(class, -Cantidad_de_registros),
+                               y = Cantidad_de_registros, fill = class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cantidad de Registros de Presencia por Clase",
+       x = "Clase",
+       y = "Cantidad de Registros de Presencia") +
+  theme_minimal()
+
+
+grafico_interactivo <- ggplotly(grafico_barras)
+# Mostrar el gráfico interactivo
+grafico_interactivo
+```
+
+# Carga de datos 2
+
+## Colums
+
+```{r}
+#| label: carga-datos-2
+
+anfibios <-
+  st_read(
+    "especies-reptiles.csv",
+    quiet = TRUE
+  )
+areas <-
+  st_read("regiones-socioeconomicas.gpkg", quiet = TRUE)
+registros <-
+  st_read(
+    "registros-reptiles.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude",
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+      ),
+      quiet = TRUE
+    )
+
+```
+
+
+# Mapa base
+
+
+## Colums
+
+```{r}
+#| label: Mapa-base
+#| title: "Mapa de riqueza de especies de la familia Iguanidae en regiones socioeconómicas"
+#| message: false
+#| warning: false
+
+areas <- 
+  areas |>
+  st_transform(4326)
+st_crs(registros) <- 4326
+registrosORegiones <- 
+  st_join(x = registros,
+          y = dplyr::select(areas, region),
+          join = st_within)
+
+registrosORegiones |>
+  st_drop_geometry() |>
+  dplyr::select(species, stateProvince, region) |>
+  datatable(
+  colnames = c("Especie", "Localidad", "Region de Conservación"),
+  options= list(
+  pageLegth = 5
+  )
+  )
+
+```
+
+# Especies registradas
+
+
+## colums
+
+```{r}
+#| label: Especies-registradas
+
+
+Especies <- registrosORegiones|>
+  st_drop_geometry()|> 
+group_by(region)|>
+summarize(RiquezaReptiles = n_distinct(species, na.rm = TRUE))
+
+Especies|>
+arrange(desc(RiquezaReptiles)) |>
+datatable(
+colnames = c("Region de Conservación", "Riqueza de Especies de Reptiles"),
+options = list(
+pageLength = 5
+))
+
+RiquezaAreas <-
+left_join(areas, Especies, by = "region")|>
+replace_na(list(RiquezaReptiles = 0))
+RiquezaAreas|>
+st_drop_geometry()|>
+dplyr:: select(region, RiquezaReptiles)|>
+arrange(desc(RiquezaReptiles))|>
+datatable(
+colnames = c("Region de Conservación", "Riqueza de Especies de Reptiles"),
+options = list(
+pageLength = 6
+))
+
+PaletaDRiqueza <-
+colorNumeric(
+palette = "RColorBrewer",
+domain = RiquezaAreas$RiquezaReptiles,
+na.color = "gray50"
+)
+PaletaDEspecies <- colorFactor(palette = "Greens", domain = registros$species)
+
+
+```
+
+# Mapa 
+
+
+## colums
+
+```{r}
+#| label: mapa 
+#| title: "Mapa de riqueza de especies de la familia Iguanidae en regiones socioeconómicas"
+
+Mapa <- leaflet() |>
+  setView(lng = -84.19452, lat = 9.572735, zoom = 7) |>
+  addTiles(group = "Mapa General(OpenStreetMap)") |>
+  addProviderTiles(providers$Esri.WorldImagery, group = "Imagenes Satelitales (Esri World Imagery)") |>
+  addPolygons(
+    data = RiquezaAreas,
+    color = "black",
+    fillColor = "transparent",
+    stroke = TRUE,
+    weight = 1.0,
+    group = "Riqueza de Especies de Reptiles"
+  ) |>
+  addCircleMarkers(
+    data = registros,
+    stroke = FALSE,
+    radius = 4,
+    fillColor = ~PaletaDEspecies(species),
+    fillOpacity = 1,
+    popup = paste(
+      "<strong>Especie:</strong>", registros$species, "<br/>",
+      "<strong>Localidad:</strong>", registros$locality, "<br/>",
+      "<strong>Fecha:</strong>", registros$eventDate, "<br/>",
+      "<strong>Fuente:</strong>", registros$institutionCode, "<br/>",
+      "<a href='", registros$occurrenceID, "'>Más información</a>"
+    ),
+    group = "Registro de Presencia"
+  ) |>
+  addLegend(
+    position = "bottomleft",
+    pal = PaletaDRiqueza,
+    values = RiquezaAreas$RiquezaReptiles,
+    title = "Riqueza de Especies de Reptiles",
+    group = "Riqueza de Especies de Reptiles"
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal = PaletaDEspecies,
+    values = registros$species,
+    title = "Especies",
+    group = "Registro de Presencia"
+  ) |>
+  addLayersControl(
+    baseGroups = c("Mapa General(OpenStreetMap)", "Imagenes Satelitales(Esri World Imagery)"),
+    overlayGroups = c("Riqueza de Especies de Reptiles", "Registro de Presencia"),
+    options = layersControlOptions(collapse = FALSE)
+  ) |>
+  addScaleBar(position = "bottomleft", options = scaleBarOptions(imperial = FALSE)) |>
+  addFullscreenControl() |>
+  addResetMapButton() |>
+  addMouseCoordinates() |>
+  hideGroup("Registro de Presencia")
+
+Mapa
+```
+
+
+# Grafico 2
+
+## colums
+
+```{r}
+#| label: grafico-barras-2
+
+
+datos <- data.frame(
+  region = c("Región A", "Región B", "Región C", "Región D"),
+  riqueza_especies = c(10, 8, 15, 12)
+)
+
+
+# Crear el gráfico de barras con ggplot2
+grafico <-
+  ggplot(datos, aes(x = reorder(region, riqueza_especies), y = riqueza_especies)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(
+    x = "Región Socioeconómica",
+    y = "Riqueza de Especies de Iguanidae",
+    title = "Riqueza de Especies de Iguanidae por Región Socioeconómica"
+  )
+
+
+
+
+grafico_plotly <- ggplotly(grafico)
+
+# Mostrar el gráfico interactivo
+grafico_plotly
+
+```
